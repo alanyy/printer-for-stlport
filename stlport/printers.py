@@ -285,11 +285,10 @@ class PairPrinter:
         self.val = val
         self.members = [('first',  val['first']), ('second', val['second'])]
 
-    def to_string():
-        print 'enter pair printer'
+    def to_string(self):
         return str(self.val.type) 
 
-    def children():
+    def children(self):
         return iter(self.members)
 
 
@@ -445,7 +444,6 @@ class StringPrinter:
                     return start
                 return self.val['_M_buffers']['_M_dynamic_buf']
             except RuntimeError:
-                try:
                     # STLport 5.0 and 5.1 without short string optimization,
                     # and STLport 4.6
                     start  = self.val['_M_start']
@@ -454,16 +452,26 @@ class StringPrinter:
                         # STLport 5.0 without _STLP_FORCE_STRING_TERMINATION
                         return ""
                     return start
-                except RuntimeError:
-                    member = self.val['m_tState']['member']
-                    if member == 0:
-                        return ""
-                    start  = self.val['m_tState']['member']['m_pStart']
-                    finish = self.val['m_tState']['member']['m_pFinish']
-                    ta0    = self.val.type.template_argument (0)
-                    if start == finish:
-                        return ""
-                    return start.cast(ta0.pointer())
+
+    def display_hint (self):
+        return 'string'
+
+class SupStringPrinter:
+    "Pretty printer for sup::String"
+
+    def __init__ (self, _typename, val):
+        self.val = get_non_debug_impl (val)
+
+    def to_string (self):
+        member = self.val['m_tState']['member']
+        if member == 0:
+	    return ""
+        start  = self.val['m_tState']['member']['m_pStart']
+        finish = self.val['m_tState']['member']['m_pFinish']
+        ta0    = self.val.type.template_argument (0)
+        if start == finish:
+	    return ""
+        return start.cast(ta0.pointer())
 
     def display_hint (self):
         return 'string'
@@ -572,6 +580,72 @@ class WrapperPrinter:
         if hasattr (self.visualizer, 'display_hint'):
             return self.visualizer.display_hint()
         return None
+
+class HashMapPrinter:
+    """Pretty printer for hash_map."""
+
+    class Iterator:
+        def skip_to_next(self):
+            while self.buck_num < self.buck_size:
+                if (self.cur_buck.dereference().cast(self.node_type) != 0):
+                    self.item = self.cur_buck.dereference().cast(self.node_type)
+                    break
+                self.buck_num += 1
+                self.cur_buck += 1
+
+        def __init__ (self, node_type, bucket_type, buckets):
+            self.node_type = node_type
+            self.cur_buck  = buckets['_M_start'].cast(bucket_type)
+            self.buck_size = buckets['_M_finish'].cast(bucket_type) - buckets['_M_start'].cast(bucket_type)
+            self.count = 0
+            self.buck_num = 0
+            self.skip_to_next()
+
+        def __iter__ (self):
+            return self
+
+        def next (self):
+            if self.item == 0 and self.count % 2 == 0:
+                raise StopIteration
+            if self.count % 2 == 0:
+                self.pair = self.item.dereference()
+                self.item = self.pair['_M_next']
+                if self.item == 0:
+                    self.buck_num += 1
+                    self.cur_buck += 1
+                    self.skip_to_next()
+                element = self.pair['_M_val']['first']
+            else:
+                element = self.pair['_M_val']['second']
+            count = self.count
+            self.count += 1
+            return ('[%d]' % count, element)
+
+    def __init__(self, typename, val):
+        self.typename = typename
+        self.val = get_non_debug_impl (val)
+
+    def to_string (self):
+        ta0 = self.val.type.template_argument (0)
+        length = get_non_debug_impl(self.val, '_M_ht')['_M_num_elements']['_M_data']
+        if length == 0:
+            return 'empty %s<%s>' % (self.typename, ta0)
+        return '%s<%s> with %d elements' % (self.typename, ta0, length)
+
+    def children (self):
+        key_type   = self.val.type.template_argument (0)
+        value_type = self.val.type.template_argument (1)
+        pair_type  \
+            = lookup_stlport_type ('pair<%s const,%s>' % (key_type,value_type))
+        node_type  \
+            = lookup_stlport_priv_type ('_Hashtable_node<%s >'
+                % str (pair_type)).pointer()
+        buckets = get_non_debug_impl (self.val, '_M_ht')['_M_buckets']
+        bucket_type = gdb.lookup_type('void').pointer().pointer()
+        return self.Iterator (node_type, bucket_type, buckets)
+
+    def display_hint (self):
+        return 'map'
 
 
 class UnorderedMapPrinter:
@@ -748,6 +822,7 @@ def add_entry (regex, printer, typename):
         prefix = ""
     if regex[0:3] == "sup":
         prefix = ""
+        suffix = "<[^,]+,[^,]+>$"
     pretty_printers_dict[re.compile (prefix+regex+suffix)] \
         = lambda val: printer (typename, val)
 
@@ -770,8 +845,9 @@ add_entry ("tr1::unordered_map",      UnorderedMapPrinter, "tr1::unordered_map")
 add_entry ("tr1::unordered_multimap", UnorderedMapPrinter, "tr1::unordered_multimap")
 add_entry ("tr1::unordered_set",      UnorderedSetPrinter, "tr1::unordered_set")
 add_entry ("tr1::unordered_multiset", UnorderedSetPrinter, "tr1::unordered_multiset")
+add_entry ("hash_map", HashMapPrinter, "hash_map")
 
 add_entry ("auto_ptr",          AutoptrPrinter,   "auto_ptr")
 add_entry ("boost::shared_ptr", SharedptrPrinter, "tr1::shared_ptr")
 add_entry ("boost::weak_ptr",   SharedptrPrinter, "tr1::weak_ptr")
-add_entry ("sup::String", StringPrinter, None)
+add_entry ("sup::String", SupStringPrinter, None)
